@@ -81,19 +81,9 @@ class Client(ConnectionProtocol):
 
     def _start_listening(self):
         self.send(C_SET_PASSWORD, self._password)
-        last_data_time = datetime.datetime.now()
-        current_time = datetime.datetime.now()
-        firing = 0
-        on_fire = False
+        frame_counter = 0
         while self._running:
             if self.have_data():
-                if (current_time-last_data_time).total_seconds() == 0:
-                    firing += 1
-                    if firing == MAX_FIRING and not on_fire:
-                        on_fire = True
-                        self.send(C_ON_FIRE)
-                        print('set to on fire!')
-                last_data_time = current_time
                 key, value = self.receive()
                 if key == CONN_QUIT:
                     self._running = False
@@ -101,14 +91,13 @@ class Client(ConnectionProtocol):
                 elif key == S_SEND_SCREEN:
                     self._frame = value
                     self._new_frame = True
+                    frame_counter += 1
+                    if frame_counter == FRAME_CHECK:
+                        self.send(C_GOT_FRAMES)
+                        frame_counter = 0
             else:
-                firing = 0
-                if on_fire:
-                    on_fire = False
-                    self.send(C_NOT_ON_FIRE)
-                    print('set to not on fire!')
-                current_time = datetime.datetime.now()
-                time.sleep(0.1)
+                print(datetime.datetime.now())
+                # time.sleep(0.1)
             key, value = self._mouse_handle.data
             while key:
                 self.send(key, value)

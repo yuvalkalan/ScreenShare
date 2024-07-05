@@ -20,7 +20,7 @@ FRAMES_DELTA = 0
 ENCODING_PARAMS = [1, 90]
 
 MAX_LOG = 100
-MAX_FIRING = 4
+FRAME_CHECK = 5
 
 CTRL_KEYS = {i+1: f'ctrl+{chr(ord("a")+i)}' for i in range(ord('z')-ord('a')+1)}
 SPECIAL_CTRL_KEYS = {127: 'ctrl+backspace', 2490368: 'ctrl+up', 2621440: 'ctrl+down', 2555904: 'ctrl+right',
@@ -57,8 +57,7 @@ C_RMOUSE_RELEASE = (next(_n)).to_bytes(KEY_SIZE, 'little')
 C_SCROLL_CLICK = (next(_n)).to_bytes(KEY_SIZE, 'little')
 C_SCROLL_RELEASE = (next(_n)).to_bytes(KEY_SIZE, 'little')
 C_WRITE_STRING = (next(_n)).to_bytes(KEY_SIZE, 'little')
-C_ON_FIRE = (next(_n)).to_bytes(KEY_SIZE, 'little')
-C_NOT_ON_FIRE = (next(_n)).to_bytes(KEY_SIZE, 'little')
+C_GOT_FRAMES = (next(_n)).to_bytes(KEY_SIZE, 'little')
 
 COMMANDS = {
     CONN_QUIT: 'CONN_QUIT',
@@ -75,6 +74,5 @@ COMMANDS = {
     C_SCROLL_CLICK: 'C_SCROLL_CLICK',
     C_SCROLL_RELEASE: 'C_SCROLL_RELEASE',
     C_WRITE_STRING: 'C_SET_CHAR',
-    C_ON_FIRE: 'C_ON_FIRE',
-    C_NOT_ON_FIRE: 'C_NOT_ON_FIRE'
+    C_GOT_FRAMES: 'C_GOT_FRAMES'
 }

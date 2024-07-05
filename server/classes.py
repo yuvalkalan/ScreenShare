@@ -7,7 +7,7 @@ class Log:
         self._log_index = 0
 
     def __iadd__(self, other):
-        current_time = datetime.datetime.now().strftime('%d.%m.%Y %H:%M:%S%f')
+        current_time = datetime.datetime.now().strftime('%d.%m.%Y %H:%M:%S.%f')
         log_str = f'{current_time} -> {other}'
         print(log_str)
         if len(self._log) >= MAX_LOG:
@@ -123,16 +123,11 @@ class ServerConnection(ConnectionProtocol):
             _, frame = cv2.imencode('.jpg', frame, ENCODING_PARAMS)
             self._last_frame = frame
             self.send(S_SEND_SCREEN, self._last_frame)
-            return True
-        else:
-            time.sleep(0.1)
-            return False
 
     def _start_streaming(self):
         self._log += f'start streaming to {self._address}'
-        on_fire = False
         delay = 0
-        d_param = 1
+        last_time = datetime.datetime.now()
         while self._running:
             if self.have_data():
                 key, value = self.receive()
@@ -180,16 +175,13 @@ class ServerConnection(ConnectionProtocol):
                                 keyboard.write(chr(char))
                             except ValueError:
                                 self._log += f'oops... char: {char}'
-                elif key == C_ON_FIRE:
-                    on_fire = True
-                    delay += 1 / d_param
-                    d_param += 1
-                elif key == C_NOT_ON_FIRE:
-                    on_fire = False
-            if self._got_password and not on_fire:
-                send = self._create_and_send_frame(delay)
-                if send:
-                    delay = max(delay - 0.005/d_param, 0)
+                elif key == C_GOT_FRAMES:
+                    current_time = datetime.datetime.now()
+                    delay = (current_time - last_time).total_seconds() / FRAME_CHECK - 1
+                    print(delay)
+                    last_time = current_time
+            if self._got_password:
+                self._create_and_send_frame(delay)
             time.sleep(0.1)
         self._log += f'stop streaming to {self._address}'
         self._socket.close()
