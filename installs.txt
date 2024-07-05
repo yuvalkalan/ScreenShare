@@ -1,1 +1,0 @@
-pip install opencv-python keyboard pywin32 pyngrok pyautogui rsa cryptography

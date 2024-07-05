@@ -20,6 +20,7 @@ FRAMES_DELTA = 0
 ENCODING_PARAMS = [1, 90]
 
 MAX_LOG = 100
+MAX_FIRING = 4
 
 CTRL_KEYS = {i+1: f'ctrl+{chr(ord("a")+i)}' for i in range(ord('z')-ord('a')+1)}
 SPECIAL_CTRL_KEYS = {127: 'ctrl+backspace', 2490368: 'ctrl+up', 2621440: 'ctrl+down', 2555904: 'ctrl+right',
