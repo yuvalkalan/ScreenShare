@@ -2,7 +2,7 @@ from protocol import *
 
 
 def main():
-    client = Client('127.0.0.1', PORT)
+    client = Client()
     print('hello')
     while True:
-        pass
+        time.sleep(0.1)

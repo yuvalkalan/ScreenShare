@@ -1,4 +1,6 @@
+import datetime
 import math
+import time
 from typing import *
 import pickle
 import socket
@@ -11,8 +13,24 @@ import numpy as np
 import win32api
 import win32con
 from pyngrok import ngrok
-
 from .constants import *
+
+
+class Log:
+    def __init__(self):
+        self._log = []
+        self._log_index = 0
+
+    def __iadd__(self, other):
+        current_time = datetime.datetime.now().strftime('%d.%m.%Y %H:%M:%S%f')
+        log_str = f'{current_time} -> {other}'
+        print(log_str)
+        if len(self._log) >= MAX_LOG:
+            self._log[self._log_index] = log_str
+            self._log_index = (self._log_index + 1) % MAX_LOG
+        else:
+            self._log.append(log_str)
+        return self
 
 
 class ConnectionProtocol:
@@ -43,7 +61,7 @@ class ConnectionProtocol:
         try:
             length = self._get_length_of_msg()
             if length == 0:
-                return S_QUIT, None
+                return CONN_QUIT, None
             data = self._socket.recv(length)
             while len(data) < length:
                 data += self._socket.recv(length-len(data))
@@ -52,7 +70,7 @@ class ConnectionProtocol:
             return key, value
         except Exception as e:
             print(f'cant receive! {e}')
-            return S_QUIT, None
+            return CONN_QUIT, None
 
     def _start_threads(self):
         for thread in self._threads:
@@ -65,6 +83,14 @@ class ConnectionProtocol:
 
 class Server:
     def __init__(self):
+        self._tunnel = ngrok.connect(PORT, "tcp")
+        url, port = self._tunnel.public_url.replace('tcp://', '').split(':')
+        url_id = url.replace(NGROK_URL_ENDING, '')
+        ngrok_ip = socket.gethostbyname(url)
+        port = int(port)
+        ngrok_code = encode_address((url_id, port))
+        self._log = Log()
+        self._log += f"ngrok details: url='{url} (id={url_id})', ip='{ngrok_ip}', port={port}, code={ngrok_code}"
         self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._server_socket.bind(('0.0.0.0', PORT))
         self._server_socket.listen()
@@ -79,9 +105,9 @@ class Server:
         while True:
             r, _, _ = select.select([self._server_socket], [], [], 0)
             if r:
-                new_client = ServerConnection(self)
-                print('new client!')
+                new_client = ServerConnection(self, self._log)
                 self._clients.append(new_client)
+            time.sleep(1)
 
     def _start_threads(self):
         for thread in self._threads:
@@ -90,47 +116,120 @@ class Server:
 
 class MouseHandle:
     def __init__(self):
-        self._action = None
-        self._value = None
+        self._pos = None
+        self._last_pos = datetime.datetime.now()
+        self._data = []
 
     @property
-    def data(self):
-        action = self._action
-        value = self._value
-        if action:
-            self._action = None
-            self._value = None
-        return action, value
+    def data(self) -> tuple:
+        oldest_data = (None, None)
+        if self._data:
+            oldest_data = self._data.pop(0)
+        return oldest_data
 
     def handle(self, event, x, y, flags, param):
+        action, value = None, None
         if event == cv2.EVENT_MOUSEMOVE:
-            self._action = S_SET_MOUSE
-            self._value = (x, y)
+            self._pos = x, y
         elif event == cv2.EVENT_LBUTTONDOWN:
-            self._action = S_LMOUSE_CLICK
-            self._value = (x, y)
+            action = C_LMOUSE_CLICK
+            value = (x, y)
         elif event == cv2.EVENT_LBUTTONUP:
-            self._action = S_LMOUSE_RELEASE
-            self._value = (x, y)
+            action = C_LMOUSE_RELEASE
+            value = (x, y)
         elif event == cv2.EVENT_RBUTTONDOWN:
-            self._action = S_RMOUSE_CLICK
-            self._value = (x, y)
+            action = C_RMOUSE_CLICK
+            value = (x, y)
         elif event == cv2.EVENT_RBUTTONUP:
-            self._action = S_RMOUSE_RELEASE
-            self._value = (x, y)
+            action = C_RMOUSE_RELEASE
+            value = (x, y)
         elif event == cv2.EVENT_MBUTTONDOWN:
-            self._action = S_SCROLL_CLICK
-            self._value = (x, y)
+            action = C_SCROLL_CLICK
+            value = (x, y)
         elif event == cv2.EVENT_MBUTTONUP:
-            self._action = S_SCROLL_RELEASE
-            self._value = (x, y)
+            action = C_SCROLL_RELEASE
+            value = (x, y)
+        if action:
+            self._data.append((action, value))
+        now_time = datetime.datetime.now()
+        if (now_time - self._last_pos).total_seconds() >= MOUSE_MOVE_DELTA:
+            self._data.append((C_SET_MOUSE, self._pos))
+            self._last_pos = now_time
 
 
 class ServerConnection(ConnectionProtocol):
-    def __init__(self, server: Server):
+    def __init__(self, server: Server, log):
         super(ServerConnection, self).__init__()
+        self._last_frame = None
+        self._log = log
+        self._frame_timer = datetime.datetime.now()-datetime.timedelta(seconds=FRAMES_DELTA+1)
         self._socket, self._address = server.accept()
-        self._window_name = str(self._address)
+        self._threads = [threading.Thread(target=self._start_streaming)]
+        self._start_threads()
+
+    def _create_and_send_frame(self):
+        now_time = datetime.datetime.now()
+        if (now_time - self._frame_timer).total_seconds() >= FRAMES_DELTA:
+            self._frame_timer = now_time
+            screen = pyautogui.screenshot()
+            frame = np.array(screen)
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame = cv2.resize(frame, resolution(RESOLUTION), interpolation=cv2.INTER_AREA)
+            _, frame = cv2.imencode('.jpg', frame, ENCODING_PARAMS)
+            self._last_frame = frame
+            self.send(S_SEND_SCREEN, self._last_frame)
+
+    def _start_streaming(self):
+        self._log += f'start streaming to {self._address}'
+        while True:
+            if self.have_data():
+                key, value = self.receive()
+                self._log += f'got new msg from {self._address}; key = {COMMANDS[key]}, value = {value}'
+                if key == CONN_QUIT:
+                    break
+                elif key == C_SET_MOUSE:
+                    win32api.SetCursorPos(get_mouse(value))
+                elif key == C_LMOUSE_CLICK:
+                    x, y = get_mouse(value)
+                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, x, y, 0, 0)
+                elif key == C_LMOUSE_RELEASE:
+                    x, y = get_mouse(value)
+                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, x, y, 0, 0)
+                elif key == C_RMOUSE_CLICK:
+                    x, y = get_mouse(value)
+                    win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTDOWN, x, y, 0, 0)
+                elif key == C_RMOUSE_RELEASE:
+                    x, y = get_mouse(value)
+                    win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTUP, x, y, 0, 0)
+                elif key == C_SCROLL_CLICK:
+                    x, y = get_mouse(value)
+                    win32api.mouse_event(win32con.MOUSEEVENTF_MIDDLEDOWN, x, y, 0, 0)
+                elif key == C_SCROLL_RELEASE:
+                    x, y = get_mouse(value)
+                    win32api.mouse_event(win32con.MOUSEEVENTF_MIDDLEUP, x, y, 0, 0)
+                elif key == C_WRITE_STRING:
+                    for char in value:
+                        if type(char) == str:
+                            keyboard.press_and_release(char)
+                        else:
+                            try:
+                                keyboard.write(chr(char))
+                            except ValueError:
+                                self._log += f'oops... char: {char}'
+            self._create_and_send_frame()
+            time.sleep(0.1)
+        self._log += f'stop streaming to {self._address}'
+
+
+class Client(ConnectionProtocol):
+    def __init__(self):
+        super(Client, self).__init__()
+        # self._server_ip, self._port = '127.0.0.1', PORT
+        self._server_ip, self._port = decode_address(input('enter server code here: '))
+        self._server_ip += NGROK_URL_ENDING
+        self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._socket.connect((self._server_ip, self._port))
+        self._window_name = str((self._server_ip, self._port))
         self._mouse_handle = MouseHandle()
         self._threads = [threading.Thread(target=self._start_listening)]
         self._start_threads()
@@ -139,76 +238,39 @@ class ServerConnection(ConnectionProtocol):
         frame = cv2.imdecode(value, cv2.IMREAD_COLOR)
         cv2.imshow(self._window_name, frame)
         cv2.setMouseCallback(self._window_name, self._mouse_handle.handle)
-        new_char = cv2.waitKey(1)
-        if new_char > 0:
-            if 224 <= new_char <= 250:
-                new_char = to_heb(new_char)
-            self.send(S_SET_CHAR, new_char)
+        str_lst = []
+        new_char = cv2.waitKeyEx(1)
+        while new_char != -1:
+            if new_char in CTRL_KEYS and keyboard.is_pressed('ctrl'):
+                str_lst.append(CTRL_KEYS[new_char])
+            elif new_char in HEB_KEYS:
+                str_lst.append(HEB_KEYS[new_char])
+            elif new_char in ARROW_KEYS:
+                str_lst.append(ARROW_KEYS[new_char])
+            elif new_char in SPECIAL_KEYS:
+                str_lst.append(SPECIAL_KEYS[new_char])
+            else:
+                str_lst.append(new_char)
+            new_char = cv2.waitKeyEx(1)
+        if str_lst:
+            self.send(C_WRITE_STRING, str_lst)
 
     def _start_listening(self):
         while True:
             if self.have_data():
                 key, value = self.receive()
-                if key == C_QUIT:
+                if key == CONN_QUIT:
                     print('breaking')
                     break
-                elif key == C_SEND_SCREEN:
+                elif key == S_SEND_SCREEN:
                     self._show_screen(value)
+            else:
+                time.sleep(0.1)
             key, value = self._mouse_handle.data
-            if key:
+            while key:
                 self.send(key, value)
+                key, value = self._mouse_handle.data
         cv2.destroyAllWindows()
-
-
-class Client(ConnectionProtocol):
-    def __init__(self, ip, port):
-        super(Client, self).__init__()
-        self._server_ip, self._port = ip, port
-        self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._socket.connect((self._server_ip, self._port))
-        self._threads = [threading.Thread(target=self._start_streaming)]
-        self._start_threads()
-
-    @staticmethod
-    def _create_frame():
-        screen = pyautogui.screenshot()
-        frame = np.array(screen)
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        frame = cv2.resize(frame, resolution(RESOLUTION), interpolation=cv2.INTER_AREA)
-        _, frame = cv2.imencode('.jpg', frame, ENCODING_PARAMS)
-        return frame
-
-    def _start_streaming(self):
-        while True:
-            if self.have_data():
-                key, value = self.receive()
-                if key == S_QUIT:
-                    break
-                elif key == S_SET_MOUSE:
-                    win32api.SetCursorPos(get_mouse(value))
-                elif key == S_LMOUSE_CLICK:
-                    x, y = get_mouse(value)
-                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, x, y, 0, 0)
-                elif key == S_LMOUSE_RELEASE:
-                    x, y = get_mouse(value)
-                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, x, y, 0, 0)
-                elif key == S_RMOUSE_CLICK:
-                    x, y = get_mouse(value)
-                    win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTDOWN, x, y, 0, 0)
-                elif key == S_RMOUSE_RELEASE:
-                    x, y = get_mouse(value)
-                    win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTUP, x, y, 0, 0)
-                elif key == S_SCROLL_CLICK:
-                    x, y = get_mouse(value)
-                    win32api.mouse_event(win32con.MOUSEEVENTF_MIDDLEDOWN, x, y, 0, 0)
-                elif key == S_SCROLL_RELEASE:
-                    x, y = get_mouse(value)
-                    win32api.mouse_event(win32con.MOUSEEVENTF_MIDDLEUP, x, y, 0, 0)
-                elif key == S_SET_CHAR:
-                    print(value, chr(value))
-                    keyboard.write(chr(value))
-            frame = self._create_frame()
-            self.send(C_SEND_SCREEN, frame)
 
 
 def resolution(res):

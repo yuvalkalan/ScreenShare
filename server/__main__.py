@@ -5,4 +5,4 @@ def main():
     server = Server()
     print('hi')
     while True:
-        pass
+        time.sleep(0.1)
