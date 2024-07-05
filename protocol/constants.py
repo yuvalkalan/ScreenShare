@@ -4,7 +4,7 @@ DATA_LENGTH = 4
 PORT = 42069
 KEY_SIZE = 2
 ENC_KEY_SIZE = 1024
-NGROK_URL_ENDING = '.tcp.ngrok.io'
+NGROK_URL_ENDING = '.tcp.eu.ngrok.io'
 
 PR_AES = 0
 PR_RSA = 1
@@ -15,12 +15,12 @@ CLIENT_RESOLUTION = 720
 SCREEN_SIZE = pyautogui.size()
 RES_RATIO = 1 + 7/9
 MOUSE_MOVE_DELTA = 0.5
-FRAMES_DELTA = 0
 
 ENCODING_PARAMS = [1, 90]
+IMAGE_TYPE = '.jpg'
 
 MAX_LOG = 100
-FRAME_CHECK = 5
+MAX_FRAME_BUFFER = 5
 
 CTRL_KEYS = {i+1: f'ctrl+{chr(ord("a")+i)}' for i in range(ord('z')-ord('a')+1)}
 SPECIAL_CTRL_KEYS = {127: 'ctrl+backspace', 2490368: 'ctrl+up', 2621440: 'ctrl+down', 2555904: 'ctrl+right',
@@ -47,17 +47,22 @@ S_SET_PUB_KEY = (next(_n)).to_bytes(KEY_SIZE, 'little')
 S_SET_AES_KEY = (next(_n)).to_bytes(KEY_SIZE, 'little')
 S_SEND_SCREEN = (next(_n)).to_bytes(KEY_SIZE, 'little')
 
+S_PS_GIVE_SCREEN = (next(_n)).to_bytes(KEY_SIZE, 'little')
+
+S_PC_SET_SCREEN = (next(_n)).to_bytes(KEY_SIZE, 'little')
+
 C_SET_PUB_KEY = (next(_n)).to_bytes(KEY_SIZE, 'little')
 C_SET_PASSWORD = (next(_n)).to_bytes(KEY_SIZE, 'little')
-C_SET_MOUSE = (next(_n)).to_bytes(KEY_SIZE, 'little')
-C_LMOUSE_CLICK = (next(_n)).to_bytes(KEY_SIZE, 'little')
-C_LMOUSE_RELEASE = (next(_n)).to_bytes(KEY_SIZE, 'little')
-C_RMOUSE_CLICK = (next(_n)).to_bytes(KEY_SIZE, 'little')
-C_RMOUSE_RELEASE = (next(_n)).to_bytes(KEY_SIZE, 'little')
-C_SCROLL_CLICK = (next(_n)).to_bytes(KEY_SIZE, 'little')
-C_SCROLL_RELEASE = (next(_n)).to_bytes(KEY_SIZE, 'little')
+C_MOUSE_EVENT = (next(_n)).to_bytes(KEY_SIZE, 'little')
 C_WRITE_STRING = (next(_n)).to_bytes(KEY_SIZE, 'little')
-C_GOT_FRAMES = (next(_n)).to_bytes(KEY_SIZE, 'little')
+C_CHANGE_RATE = (next(_n)).to_bytes(KEY_SIZE, 'little')
+
+C_PC_WRITE_STRING = (next(_n)).to_bytes(KEY_SIZE, 'little')
+C_PC_MOUSE_EVENT = (next(_n)).to_bytes(KEY_SIZE, 'little')
+
+C_PS_SET_SOCKET = (next(_n)).to_bytes(KEY_SIZE, 'little')
+C_PS_SET_WIN_NAME = (next(_n)).to_bytes(KEY_SIZE, 'little')
+C_PS_SET_SCREEN = (next(_n)).to_bytes(KEY_SIZE, 'little')
 
 COMMANDS = {
     CONN_QUIT: 'CONN_QUIT',
@@ -66,13 +71,14 @@ COMMANDS = {
     S_SET_AES_KEY: 'S_SET_AES_KEY',
     C_SET_PUB_KEY: 'C_SET_PUB_KEY',
     C_SET_PASSWORD: 'C_SET_PASSWORD',
-    C_SET_MOUSE: 'C_SET_MOUSE',
-    C_LMOUSE_CLICK: 'C_LMOUSE_CLICK',
-    C_LMOUSE_RELEASE: 'C_LMOUSE_RELEASE',
-    C_RMOUSE_CLICK: 'C_RMOUSE_CLICK',
-    C_RMOUSE_RELEASE: 'C_RMOUSE_RELEASE',
-    C_SCROLL_CLICK: 'C_SCROLL_CLICK',
-    C_SCROLL_RELEASE: 'C_SCROLL_RELEASE',
+    C_MOUSE_EVENT: 'C_MOUSE_EVENT',
     C_WRITE_STRING: 'C_SET_CHAR',
-    C_GOT_FRAMES: 'C_GOT_FRAMES'
+    C_CHANGE_RATE: 'C_CHANGE_RATE',
+    S_PS_GIVE_SCREEN: 'S_PS_GIVE_SCREEN',
+    S_PC_SET_SCREEN: 'S_PC_SET_SCREEN',
+    C_PC_WRITE_STRING: 'C_PC_WRITE_STRING',
+    C_PC_MOUSE_EVENT: 'C_PC_MOUSE_EVENT',
+    C_PS_SET_SOCKET: 'C_PS_SET_SOCKET',
+    C_PS_SET_WIN_NAME: 'C_PS_SET_WIN_NAME',
+    C_PS_SET_SCREEN: 'C_PS_SET_SCREEN'
 }

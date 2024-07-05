@@ -23,6 +23,14 @@ class Server:
         self._log = Log()
         self._running = False
         self._tunnel = None
+        self._create_ngrok_tunnel()
+        self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._server_socket.bind(('0.0.0.0', PORT))
+        self._server_socket.listen()
+        self._clients: Dict[socket.socket, ProcessManager] = {}
+        self._frame = None
+
+    def _create_ngrok_tunnel(self):
         i = 1
         while not self._tunnel:
             try:
@@ -39,22 +47,18 @@ class Server:
         port = int(port)
         ngrok_code = encode_address((url_id, port))
         self._log += f"ngrok details: url='{url} (id={url_id})', ip='{ngrok_ip}', port={port}, code={ngrok_code}"
-        self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._server_socket.bind(('0.0.0.0', PORT))
-        self._server_socket.listen()
-        self._clients: List[ServerConnection] = []
-        self._threads: List[threading.Thread] = [threading.Thread(target=self.create_connections)]
 
-    def start_streaming(self):
+    def start(self):
         self._running = True
-        self._start_threads()
 
-    def stop_streaming(self):
+    def stop(self):
         self._running = False
-        for thread in self._threads:
-            thread.join()
-        for client in self._clients:
+        for client in self._clients.values():
             client.join()
+        try:
+            ngrok.disconnect(self._tunnel.public_url)
+        except:
+            pass
 
     @property
     def running(self):
@@ -65,37 +69,37 @@ class Server:
         self._running = other
 
     def accept(self):
-        return self._server_socket.accept()
+        return ServerConnection(self, self._log, self._server_socket)
 
-    def create_connections(self):
-        while self._running:
-            r, _, _ = select.select([self._server_socket], [], [], 0)
-            if r:
-                new_client = ServerConnection(self, self._log)
-                self._clients.append(new_client)
-            time.sleep(1)
-        self._server_socket.close()
-
-    def _start_threads(self):
-        for thread in self._threads:
-            thread.start()
+    def have_data(self):
+        r, _, _ = select.select([self._server_socket], [], [], 0)
+        return self._server_socket in r
 
 
 class ServerConnection(ConnectionProtocol):
-    def __init__(self, server: Server, log):
+    def __init__(self, server: Server, log, sock: socket.socket):
         super(ServerConnection, self).__init__()
-        self._last_frame = None
         self._log = log
         self._server = server
-        self._frame_timer = datetime.datetime.now()-datetime.timedelta(seconds=FRAMES_DELTA+1)
-        self._socket, self._address = server.accept()
+        self._got_password = False
+        self._socket, self._address = sock.accept()
         self._set_encryption()
-        self._threads = [threading.Thread(target=self._start_streaming)]
-        self._start_threads()
 
     @property
     def _running(self):
         return self._server.running
+
+    @property
+    def address(self):
+        return self._address
+
+    @property
+    def got_password(self):
+        return self._got_password
+
+    @got_password.setter
+    def got_password(self, value):
+        self._got_password = value
 
     def _set_encryption(self):
         self._log += f'setting encryption with {self._address}...'
@@ -111,81 +115,3 @@ class ServerConnection(ConnectionProtocol):
         self._got_password = False
         self.send(S_SET_AES_KEY, (self._key, self._iv), PR_RSA)
         self._log += f'successfully set encryption with {self._address}'
-
-    def _create_and_send_frame(self, delay):
-        now_time = datetime.datetime.now()
-        if (now_time - self._frame_timer).total_seconds() >= FRAMES_DELTA+delay:
-            self._frame_timer = now_time
-            screen = pyautogui.screenshot()
-            frame = np.array(screen)
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            frame = cv2.resize(frame, resolution(COMPRESS_RESOLUTION), interpolation=cv2.INTER_AREA)
-            _, frame = cv2.imencode('.jpg', frame, ENCODING_PARAMS)
-            self._last_frame = frame
-            self.send(S_SEND_SCREEN, self._last_frame)
-
-    def _start_streaming(self):
-        self._log += f'start streaming to {self._address}'
-        delay = 0
-        last_time = datetime.datetime.now()
-        while self._running:
-            if self.have_data():
-                key, value = self.receive()
-                try:
-                    self._log += f'got new msg from {self._address}; key = {COMMANDS[key]}, value = {value}'
-                except:
-                    break
-                if not self._got_password and key != C_SET_PASSWORD:
-                    break
-                if key == CONN_QUIT:
-                    break
-                elif key == C_SET_PASSWORD:
-                    if value == 'pass':
-                        self._got_password = True
-                        self._log += f'correct password from {self._address}'
-                    else:
-                        self._log += f'incorrect password from {self._address}'
-                        break
-                elif key == C_SET_MOUSE:
-                    win32api.SetCursorPos(value)
-                elif key == C_LMOUSE_CLICK:
-                    x, y = value
-                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, x, y, 0, 0)
-                elif key == C_LMOUSE_RELEASE:
-                    x, y = value
-                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, x, y, 0, 0)
-                elif key == C_RMOUSE_CLICK:
-                    x, y = value
-                    win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTDOWN, x, y, 0, 0)
-                elif key == C_RMOUSE_RELEASE:
-                    x, y = value
-                    win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTUP, x, y, 0, 0)
-                elif key == C_SCROLL_CLICK:
-                    x, y = value
-                    win32api.mouse_event(win32con.MOUSEEVENTF_MIDDLEDOWN, x, y, 0, 0)
-                elif key == C_SCROLL_RELEASE:
-                    x, y = value
-                    win32api.mouse_event(win32con.MOUSEEVENTF_MIDDLEUP, x, y, 0, 0)
-                elif key == C_WRITE_STRING:
-                    for char in value:
-                        if type(char) == str:
-                            keyboard.press_and_release(char)
-                        else:
-                            try:
-                                keyboard.write(chr(char))
-                            except ValueError:
-                                self._log += f'oops... char: {char}'
-                elif key == C_GOT_FRAMES:
-                    current_time = datetime.datetime.now()
-                    delay = (current_time - last_time).total_seconds() / FRAME_CHECK - 1
-                    print(delay)
-                    last_time = current_time
-            if self._got_password:
-                self._create_and_send_frame(delay)
-            time.sleep(0.1)
-        self._log += f'stop streaming to {self._address}'
-        self._socket.close()
-
-    def join(self):
-        for thread in self._threads:
-            thread.join()

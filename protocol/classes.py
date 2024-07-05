@@ -1,22 +1,22 @@
-import datetime
 import math
-import os
-import time
 from typing import *
 import pickle
-import socket
 import select
-import threading
-
+from multiprocessing import Process, Queue
+from .constants import *
+import rsa
+import datetime
+import os
+import time
+import socket
+from threading import Thread
 import cv2
 import keyboard
 import numpy as np
 import win32api
 import win32con
 from pyngrok import ngrok
-from .constants import *
 
-import rsa
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
 
@@ -24,7 +24,6 @@ from cryptography.hazmat.backends import default_backend
 class ConnectionProtocol:
     def __init__(self):
         self._socket = None
-        self._threads = []
         self._public_key, self._private_key = rsa.newkeys(ENC_KEY_SIZE)
         self._other_public = None
         self._key = None
@@ -88,57 +87,55 @@ class ConnectionProtocol:
             print(f'cant receive! {e}')
             return CONN_QUIT, None
 
-    def _start_threads(self):
-        for thread in self._threads:
-            thread.start()
-
     def have_data(self):
         r, _, _ = select.select([self._socket], [], [], 0)
         return self._socket in r
 
 
-class MouseHandle:
-    def __init__(self):
-        self._pos = None
-        self._last_pos = datetime.datetime.now()
-        self._data = []
+class BaseProcess:
+    def __init__(self, q_receive: Queue, q_send: Queue):
+        self._q_receive = q_receive
+        self._q_send = q_send
 
-    @property
-    def data(self) -> tuple:
-        oldest_data = (None, None)
-        if self._data:
-            oldest_data = self._data.pop(0)
-        return oldest_data
+    def have_data(self):
+        return not self._q_receive.empty()
 
-    def handle(self, event, x, y, *_):
-        x, y = get_mouse((x, y))
-        action, value = None, None
-        if event == cv2.EVENT_MOUSEMOVE:
-            self._pos = x, y
-        elif event == cv2.EVENT_LBUTTONDOWN:
-            action = C_LMOUSE_CLICK
-            value = (x, y)
-        elif event == cv2.EVENT_LBUTTONUP:
-            action = C_LMOUSE_RELEASE
-            value = (x, y)
-        elif event == cv2.EVENT_RBUTTONDOWN:
-            action = C_RMOUSE_CLICK
-            value = (x, y)
-        elif event == cv2.EVENT_RBUTTONUP:
-            action = C_RMOUSE_RELEASE
-            value = (x, y)
-        elif event == cv2.EVENT_MBUTTONDOWN:
-            action = C_SCROLL_CLICK
-            value = (x, y)
-        elif event == cv2.EVENT_MBUTTONUP:
-            action = C_SCROLL_RELEASE
-            value = (x, y)
-        if action:
-            self._data.append((action, value))
-        now_time = datetime.datetime.now()
-        if (now_time - self._last_pos).total_seconds() >= MOUSE_MOVE_DELTA:
-            self._data.append((C_SET_MOUSE, self._pos))
-            self._last_pos = now_time
+    def receive(self):
+        try:
+            return self._q_receive.get()
+        except Exception as e:
+            print(f'cant receive from process! {e}')
+            return CONN_QUIT, None
+
+    def send(self, key, value=None):
+        try:
+            self._q_send.put((key, value))
+        except Exception as e:
+            print(f'cant send! {e}')
+
+    def get(self, key, value=None):
+        self.send(key, value)
+        key, value = self.receive()
+        return value
+
+
+class ProcessManager(BaseProcess):
+    def __init__(self, target):
+        super(ProcessManager, self).__init__(Queue(), Queue())
+        self._process = Process(target=target, args=(self._q_send, self._q_receive))
+
+    def start(self):
+        self._process.start()
+
+    def join(self):
+        self._process.join()
+
+
+class ProcessHandle(BaseProcess):
+    def __init__(self, q_receive: Queue, q_send: Queue):
+        super(ProcessHandle, self).__init__(q_receive, q_send)
+        self._q_receive = q_receive
+        self._q_send = q_send
 
 
 def resolution(res):
