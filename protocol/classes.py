@@ -1,5 +1,6 @@
 import datetime
 import math
+import os
 import time
 from typing import *
 import pickle
@@ -14,6 +15,10 @@ import win32api
 import win32con
 from pyngrok import ngrok
 from .constants import *
+
+import rsa
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.backends import default_backend
 
 
 class Log:
@@ -37,15 +42,13 @@ class ConnectionProtocol:
     def __init__(self):
         self._socket = None
         self._threads = []
-
-    def send(self, key, value):
-        try:
-            value = pickle.dumps(value)
-            data = key + value
-            length = len(data).to_bytes(DATA_LENGTH, 'little')
-            self._socket.sendall(length + data)
-        except Exception as e:
-            print(f'cant send! {e}')
+        self._public_key, self._private_key = rsa.newkeys(ENC_KEY_SIZE)
+        self._other_public = None
+        self._key = None
+        self._iv = None
+        self._cipher = None
+        self._encryptor = None
+        self._decryptor = None
 
     def _get_length_of_msg(self):
         try:
@@ -57,14 +60,44 @@ class ConnectionProtocol:
             print(f'cant get length! {e}')
             return 0
 
-    def receive(self):
+    def send(self, key, value=None, protocol=PR_AES):
+        try:
+            data = key + pickle.dumps(value)
+            if protocol == PR_RSA:
+                data = rsa.encrypt(data, self._other_public)
+            elif protocol == PR_AES:
+                to_add = len(self._iv) - len(data) % len(self._iv) - 1
+                data = to_add.to_bytes(1, 'little') + b'\x00' * to_add + data
+                data = self._encryptor.update(data) + self._encryptor.finalize()
+                self._encryptor = self._cipher.encryptor()
+            elif protocol == PR_UNENCRYPTED:
+                pass
+            else:
+                raise ValueError
+            length = len(data).to_bytes(DATA_LENGTH, 'little')
+            self._socket.sendall(length + data)
+        except Exception as e:
+            print(f'cant send! {e}')
+
+    def receive(self, protocol=PR_AES):
         try:
             length = self._get_length_of_msg()
             if length == 0:
                 return CONN_QUIT, None
             data = self._socket.recv(length)
             while len(data) < length:
-                data += self._socket.recv(length-len(data))
+                data += self._socket.recv(length - len(data))
+            if protocol == PR_RSA:
+                data = rsa.decrypt(data, self._private_key)
+            elif protocol == PR_AES:
+                data = self._decryptor.update(data) + self._decryptor.finalize()
+                to_remove = data[0]
+                data = data[to_remove + 1:]
+                self._decryptor = self._cipher.decryptor()
+            elif protocol == PR_UNENCRYPTED:
+                pass
+            else:
+                raise ValueError
             key, value = data[:KEY_SIZE], data[KEY_SIZE:length]
             value = pickle.loads(value)
             return key, value
@@ -83,13 +116,23 @@ class ConnectionProtocol:
 
 class Server:
     def __init__(self):
-        self._tunnel = ngrok.connect(PORT, "tcp")
+        self._log = Log()
+        self._tunnel = None
+        i = 1
+        while not self._tunnel:
+            try:
+                self._log += 'init ngrok...'
+                self._tunnel = ngrok.connect(PORT, "tcp")
+            except ngrok.PyngrokError:
+                self._log += f'cannot start ngrok... retrying ({i})'
+                i += 1
+                time.sleep(1)
+        self._log += 'successfully start ngrok!'
         url, port = self._tunnel.public_url.replace('tcp://', '').split(':')
         url_id = url.replace(NGROK_URL_ENDING, '')
         ngrok_ip = socket.gethostbyname(url)
         port = int(port)
         ngrok_code = encode_address((url_id, port))
-        self._log = Log()
         self._log += f"ngrok details: url='{url} (id={url_id})', ip='{ngrok_ip}', port={port}, code={ngrok_code}"
         self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._server_socket.bind(('0.0.0.0', PORT))
@@ -127,7 +170,8 @@ class MouseHandle:
             oldest_data = self._data.pop(0)
         return oldest_data
 
-    def handle(self, event, x, y, flags, param):
+    def handle(self, event, x, y, *_):
+        x, y = get_mouse((x, y))
         action, value = None, None
         if event == cv2.EVENT_MOUSEMOVE:
             self._pos = x, y
@@ -164,48 +208,84 @@ class ServerConnection(ConnectionProtocol):
         self._log = log
         self._frame_timer = datetime.datetime.now()-datetime.timedelta(seconds=FRAMES_DELTA+1)
         self._socket, self._address = server.accept()
+        self._set_encryption()
         self._threads = [threading.Thread(target=self._start_streaming)]
         self._start_threads()
 
-    def _create_and_send_frame(self):
+    def _set_encryption(self):
+        self._log += f'setting encryption with {self._address}...'
+        self.send(S_SET_PUB_KEY, (self._public_key.n, self._public_key.e), PR_UNENCRYPTED)
+        key, value = self.receive(PR_UNENCRYPTED)
+        n, e = value
+        self._other_public = rsa.PublicKey(n, e)
+        self._key = os.urandom(32)
+        self._iv = os.urandom(16)
+        self._cipher = Cipher(algorithms.AES(self._key), modes.CBC(self._iv), backend=default_backend())
+        self._encryptor = self._cipher.encryptor()
+        self._decryptor = self._cipher.decryptor()
+        self._got_password = False
+        self.send(S_SET_AES_KEY, (self._key, self._iv), PR_RSA)
+        self._log += f'successfully set encryption with {self._address}'
+
+    def _create_and_send_frame(self, delay):
         now_time = datetime.datetime.now()
-        if (now_time - self._frame_timer).total_seconds() >= FRAMES_DELTA:
+        if (now_time - self._frame_timer).total_seconds() >= FRAMES_DELTA+delay:
             self._frame_timer = now_time
             screen = pyautogui.screenshot()
             frame = np.array(screen)
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            frame = cv2.resize(frame, resolution(RESOLUTION), interpolation=cv2.INTER_AREA)
+            frame = cv2.resize(frame, resolution(COMPRESS_RESOLUTION), interpolation=cv2.INTER_AREA)
             _, frame = cv2.imencode('.jpg', frame, ENCODING_PARAMS)
             self._last_frame = frame
             self.send(S_SEND_SCREEN, self._last_frame)
+            return True
+        else:
+            time.sleep(0.1)
+            return False
 
     def _start_streaming(self):
         self._log += f'start streaming to {self._address}'
+        on_fire = False
+        delay = 0
+        d_param = 1
         while True:
             if self.have_data():
+                print(datetime.datetime.now())
                 key, value = self.receive()
-                self._log += f'got new msg from {self._address}; key = {COMMANDS[key]}, value = {value}'
+                try:
+                    self._log += f'got new msg from {self._address}; key = {COMMANDS[key]}, value = {value}'
+                except:
+                    break
+                if not self._got_password and key != C_SET_PASSWORD:
+                    break
                 if key == CONN_QUIT:
                     break
+                elif key == C_SET_PASSWORD:
+                    if value == 'pass':
+                        self._got_password = True
+                        self._log += f'correct password from {self._address}'
+                    else:
+                        self._log += f'incorrect password from {self._address}'
+                        break
                 elif key == C_SET_MOUSE:
-                    win32api.SetCursorPos(get_mouse(value))
+                    win32api.SetCursorPos(value)
                 elif key == C_LMOUSE_CLICK:
-                    x, y = get_mouse(value)
+                    x, y = value
                     win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, x, y, 0, 0)
                 elif key == C_LMOUSE_RELEASE:
-                    x, y = get_mouse(value)
+                    x, y = value
                     win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, x, y, 0, 0)
                 elif key == C_RMOUSE_CLICK:
-                    x, y = get_mouse(value)
+                    x, y = value
                     win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTDOWN, x, y, 0, 0)
                 elif key == C_RMOUSE_RELEASE:
-                    x, y = get_mouse(value)
+                    x, y = value
                     win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTUP, x, y, 0, 0)
                 elif key == C_SCROLL_CLICK:
-                    x, y = get_mouse(value)
+                    x, y = value
                     win32api.mouse_event(win32con.MOUSEEVENTF_MIDDLEDOWN, x, y, 0, 0)
                 elif key == C_SCROLL_RELEASE:
-                    x, y = get_mouse(value)
+                    x, y = value
                     win32api.mouse_event(win32con.MOUSEEVENTF_MIDDLEUP, x, y, 0, 0)
                 elif key == C_WRITE_STRING:
                     for char in value:
@@ -216,7 +296,17 @@ class ServerConnection(ConnectionProtocol):
                                 keyboard.write(chr(char))
                             except ValueError:
                                 self._log += f'oops... char: {char}'
-            self._create_and_send_frame()
+                elif key == C_ON_FIRE:
+                    on_fire = True
+                    delay += 1 / d_param
+                    d_param += 1
+                elif key == C_NOT_ON_FIRE:
+                    on_fire = False
+            if self._got_password and not on_fire:
+                send = self._create_and_send_frame(delay)
+                if send:
+                    delay = max(delay - 0.005/d_param, 0)
+                    print(delay)
             time.sleep(0.1)
         self._log += f'stop streaming to {self._address}'
 
@@ -225,46 +315,91 @@ class Client(ConnectionProtocol):
     def __init__(self):
         super(Client, self).__init__()
         # self._server_ip, self._port = '127.0.0.1', PORT
-        self._server_ip, self._port = decode_address(input('enter server code here: '))
+        self._server_ip, self._port = decode_address(input('enter server code: '))
+        self._password = input('enter password: ')
+        self._frame = None
+        self._new_frame = False
+        self._avg_frame_rate = 0
         self._server_ip += NGROK_URL_ENDING
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._socket.connect((self._server_ip, self._port))
+        self._set_encryption()
         self._window_name = str((self._server_ip, self._port))
         self._mouse_handle = MouseHandle()
-        self._threads = [threading.Thread(target=self._start_listening)]
+        self._threads = [threading.Thread(target=self._start_listening), threading.Thread(target=self._show_screen)]
         self._start_threads()
 
-    def _show_screen(self, value):
-        frame = cv2.imdecode(value, cv2.IMREAD_COLOR)
-        cv2.imshow(self._window_name, frame)
-        cv2.setMouseCallback(self._window_name, self._mouse_handle.handle)
-        str_lst = []
-        new_char = cv2.waitKeyEx(1)
-        while new_char != -1:
-            if new_char in CTRL_KEYS and keyboard.is_pressed('ctrl'):
-                str_lst.append(CTRL_KEYS[new_char])
-            elif new_char in HEB_KEYS:
-                str_lst.append(HEB_KEYS[new_char])
-            elif new_char in ARROW_KEYS:
-                str_lst.append(ARROW_KEYS[new_char])
-            elif new_char in SPECIAL_KEYS:
-                str_lst.append(SPECIAL_KEYS[new_char])
+    def _set_encryption(self):
+        print('setting encryption...')
+        key, value = self.receive(PR_UNENCRYPTED)
+        n, e = value
+        self._other_public = rsa.PublicKey(n, e)
+        self.send(C_SET_PUB_KEY, (self._public_key.n, self._public_key.e), PR_UNENCRYPTED)
+        key, value = self.receive(PR_RSA)
+        self._key, self._iv = value
+        self._cipher = Cipher(algorithms.AES(self._key), modes.CBC(self._iv), backend=default_backend())
+        self._encryptor = self._cipher.encryptor()
+        self._decryptor = self._cipher.decryptor()
+        print('successfully set encryption')
+
+    def _show_screen(self):
+        while True:
+            if self._new_frame:
+                frame = cv2.imdecode(self._frame, cv2.IMREAD_COLOR)
+                frame = cv2.resize(frame, resolution(CLIENT_RESOLUTION), interpolation=cv2.INTER_AREA)
+                cv2.imshow(self._window_name, frame)
+                cv2.setMouseCallback(self._window_name, self._mouse_handle.handle)
+                str_lst = []
+                new_char = cv2.waitKeyEx(1)
+                while new_char != -1:
+                    if new_char in CTRL_KEYS and keyboard.is_pressed('ctrl'):
+                        str_lst.append(CTRL_KEYS[new_char])
+                    elif new_char in HEB_KEYS:
+                        str_lst.append(HEB_KEYS[new_char])
+                    elif new_char in ARROW_KEYS:
+                        str_lst.append(ARROW_KEYS[new_char])
+                    elif new_char in SPECIAL_KEYS:
+                        str_lst.append(SPECIAL_KEYS[new_char])
+                    else:
+                        str_lst.append(new_char)
+                    new_char = cv2.waitKeyEx(1)
+                if str_lst:
+                    self.send(C_WRITE_STRING, str_lst)
+                self._new_frame = False
             else:
-                str_lst.append(new_char)
-            new_char = cv2.waitKeyEx(1)
-        if str_lst:
-            self.send(C_WRITE_STRING, str_lst)
+                time.sleep(0.1)
 
     def _start_listening(self):
+        MAX_FIRING = 4
+        self.send(C_SET_PASSWORD, self._password)
+        last_data_time = datetime.datetime.now()
+        current_time = datetime.datetime.now()
+        firing = 0
+        on_fire = False
         while True:
             if self.have_data():
+                if (current_time-last_data_time).total_seconds() == 0:
+                    firing += 1
+                    if firing == MAX_FIRING and not on_fire:
+                        on_fire = True
+                        self.send(C_ON_FIRE)
+                        print('set to on fire!')
+                    print(firing)
+                last_data_time = current_time
                 key, value = self.receive()
                 if key == CONN_QUIT:
                     print('breaking')
                     break
                 elif key == S_SEND_SCREEN:
-                    self._show_screen(value)
+                    self._frame = value
+                    self._new_frame = True
             else:
+                firing = 0
+                if on_fire:
+                    on_fire = False
+                    self.send(C_NOT_ON_FIRE)
+                    print('set to not on fire!')
+                current_time = datetime.datetime.now()
                 time.sleep(0.1)
             key, value = self._mouse_handle.data
             while key:
@@ -280,7 +415,7 @@ def resolution(res):
 def get_mouse(pos):
     x, y = pos
     w, h = SCREEN_SIZE
-    mouse_ratio = h / RESOLUTION
+    mouse_ratio = h / CLIENT_RESOLUTION
     return int(mouse_ratio * x), int(mouse_ratio * y)
 
 

@@ -1,17 +1,21 @@
 import pyautogui
 
-
 DATA_LENGTH = 4
 PORT = 42069
 KEY_SIZE = 2
+ENC_KEY_SIZE = 1024
 NGROK_URL_ENDING = '.tcp.ngrok.io'
 
+PR_AES = 0
+PR_RSA = 1
+PR_UNENCRYPTED = 2
 
-RESOLUTION = 900
+COMPRESS_RESOLUTION = 480
+CLIENT_RESOLUTION = 720
 SCREEN_SIZE = pyautogui.size()
 RES_RATIO = 1 + 7/9
 MOUSE_MOVE_DELTA = 0.5
-FRAMES_DELTA = 0.5
+FRAMES_DELTA = 0
 
 ENCODING_PARAMS = [1, 90]
 
@@ -38,8 +42,12 @@ _n = _next_key()
 
 CONN_QUIT = (next(_n)).to_bytes(KEY_SIZE, 'little')
 
+S_SET_PUB_KEY = (next(_n)).to_bytes(KEY_SIZE, 'little')
+S_SET_AES_KEY = (next(_n)).to_bytes(KEY_SIZE, 'little')
 S_SEND_SCREEN = (next(_n)).to_bytes(KEY_SIZE, 'little')
 
+C_SET_PUB_KEY = (next(_n)).to_bytes(KEY_SIZE, 'little')
+C_SET_PASSWORD = (next(_n)).to_bytes(KEY_SIZE, 'little')
 C_SET_MOUSE = (next(_n)).to_bytes(KEY_SIZE, 'little')
 C_LMOUSE_CLICK = (next(_n)).to_bytes(KEY_SIZE, 'little')
 C_LMOUSE_RELEASE = (next(_n)).to_bytes(KEY_SIZE, 'little')
@@ -48,10 +56,16 @@ C_RMOUSE_RELEASE = (next(_n)).to_bytes(KEY_SIZE, 'little')
 C_SCROLL_CLICK = (next(_n)).to_bytes(KEY_SIZE, 'little')
 C_SCROLL_RELEASE = (next(_n)).to_bytes(KEY_SIZE, 'little')
 C_WRITE_STRING = (next(_n)).to_bytes(KEY_SIZE, 'little')
+C_ON_FIRE = (next(_n)).to_bytes(KEY_SIZE, 'little')
+C_NOT_ON_FIRE = (next(_n)).to_bytes(KEY_SIZE, 'little')
 
 COMMANDS = {
     CONN_QUIT: 'CONN_QUIT',
     S_SEND_SCREEN: 'S_SEND_SCREEN',
+    S_SET_PUB_KEY: 'S_SET_PUB_KEY',
+    S_SET_AES_KEY: 'S_SET_AES_KEY',
+    C_SET_PUB_KEY: 'C_SET_PUB_KEY',
+    C_SET_PASSWORD: 'C_SET_PASSWORD',
     C_SET_MOUSE: 'C_SET_MOUSE',
     C_LMOUSE_CLICK: 'C_LMOUSE_CLICK',
     C_LMOUSE_RELEASE: 'C_LMOUSE_RELEASE',
@@ -59,5 +73,7 @@ COMMANDS = {
     C_RMOUSE_RELEASE: 'C_RMOUSE_RELEASE',
     C_SCROLL_CLICK: 'C_SCROLL_CLICK',
     C_SCROLL_RELEASE: 'C_SCROLL_RELEASE',
-    C_WRITE_STRING: 'C_SET_CHAR'
+    C_WRITE_STRING: 'C_SET_CHAR',
+    C_ON_FIRE: 'C_ON_FIRE',
+    C_NOT_ON_FIRE: 'C_NOT_ON_FIRE'
 }
